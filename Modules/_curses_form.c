@@ -18,11 +18,16 @@ static const char PyCursesVersion[] = "0.1";
 
 typedef struct {
     PyObject *PyCursesError;
-    PyTypeObject *PyCursesPanel_Type;
-} _curses_panel_state;
+    PyTypeObject *PyCursesForm_Type;
+} _curses_form_state;
 
-static inline _curses_panel_state *
-get_curses_panel_state(PyObject *module)
+typedef struct {
+    PyObject *PyCursesError;
+    PyTypeObject *PyCursesField_Type;
+} _curses_field_state;
+
+static inline _curses_form_state *
+get_curses_form_state(PyObject *module)
 {
     void *state = PyModule_GetState(module);
     assert(state != NULL);
@@ -628,7 +633,6 @@ _curses_panel_update_panels_impl(PyObject *module)
 }
 
 /* List of functions defined in the module */
-
 static PyMethodDef PyCurses_methods[] = {
     _CURSES_PANEL_BOTTOM_PANEL_METHODDEF
     _CURSES_PANEL_NEW_PANEL_METHODDEF
@@ -639,17 +643,17 @@ static PyMethodDef PyCurses_methods[] = {
 
 /* Initialization function for the module */
 static int
-_curses_panel_exec(PyObject *mod)
+_curses_form_exec(PyObject *mod)
 {
-    _curses_panel_state *state = get_curses_panel_state(mod);
+    _curses_form_state *state = get_curses_form_state(mod);
     /* Initialize object type */
-    state->PyCursesPanel_Type = (PyTypeObject *)PyType_FromModuleAndSpec(
-        mod, &PyCursesPanel_Type_spec, NULL);
-    if (state->PyCursesPanel_Type == NULL) {
+    state->PyCursesForm_Type = (PyTypeObject *)PyType_FromModuleAndSpec(
+        mod, &PyCursesForm_Type_spec, NULL);
+    if (state->PyCursesForm_Type == NULL) {
         return -1;
     }
 
-    if (PyModule_AddType(mod, state->PyCursesPanel_Type) < 0) {
+    if (PyModule_AddType(mod, state->PyCursesForm_Type) < 0) {
         return -1;
     }
 
@@ -658,7 +662,7 @@ _curses_panel_exec(PyObject *mod)
         return -1;
     }
 
-    /* For exception _curses_panel.error */
+    /* For exception _curses_form.error */
     state->PyCursesError = PyErr_NewException(
         "_curses_form.error", NULL, NULL);
 
