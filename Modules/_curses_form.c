@@ -31,7 +31,7 @@ get_curses_form_state(PyObject *module)
 {
     void *state = PyModule_GetState(module);
     assert(state != NULL);
-    return (_curses_panel_state *)state;
+    return (_curses_form_state *)state;
 }
 
 static int
