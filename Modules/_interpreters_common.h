@@ -5,18 +5,21 @@
     _RESOLVE_MODINIT_FUNC_NAME(NAME)
 
 
+#define GETDATA(FUNC) ((_PyXIData_getdata_t){.basic=FUNC})
+
 static int
-ensure_xid_class(PyTypeObject *cls, xidatafunc getdata)
+ensure_xid_class(PyTypeObject *cls, _PyXIData_getdata_t getdata)
 {
-    //assert(cls->tp_flags & Py_TPFLAGS_HEAPTYPE);
-    return _PyXIData_RegisterClass(cls, getdata);
+    PyThreadState *tstate = PyThreadState_Get();
+    return _PyXIData_RegisterClass(tstate, cls, getdata);
 }
 
 #ifdef REGISTERS_HEAP_TYPES
 static int
 clear_xid_class(PyTypeObject *cls)
 {
-    return _PyXIData_UnregisterClass(cls);
+    PyThreadState *tstate = PyThreadState_Get();
+    return _PyXIData_UnregisterClass(tstate, cls);
 }
 #endif
 
