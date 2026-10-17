@@ -6154,8 +6154,10 @@ dnl check for ncurses/ncursesw and panel/panelw
 dnl NOTE: old curses is not detected.
 dnl have_curses=[no, ncursesw, ncurses]
 dnl have_panel=[no, panelw, panel]
+dnl have_form=[no, formw, form]
 have_curses=no
 have_panel=no
+have_form=no
 
 AH_TEMPLATE([HAVE_NCURSESW], [Define to 1 if you have the `ncursesw' library.])
 AC_CHECK_HEADERS([curses.h ncurses.h])
@@ -6255,6 +6257,41 @@ AS_VAR_IF([ac_cv_header_panel_h], [yes], [
   ])
 
 ])dnl ac_cv_header_panel_h = yes
+
+dnl check for ncurses' form/formw library
+AC_CHECK_HEADERS([form.h])
+
+AS_VAR_IF([ac_cv_header_form_h], [yes], [
+  if test "$ac_sys_system" != "Darwin"; then
+    AS_VAR_IF([have_curses], [ncursesw], [
+      PKG_CHECK_MODULES([FORM], [formw], [
+        have_form=formw
+      ], [
+        WITH_SAVE_ENV([
+          AC_CHECK_LIB([formw], [form_driver], [
+            have_form=formw
+            FORM_CFLAGS=${FORM_CFLAGS-""}
+            FORM_LIBS=${FORM_LIBS-"-lformw"}
+          ])
+        ])
+      ])
+    ])
+  fi
+
+  AS_VAR_IF([have_curses], [ncurses], [
+    PKG_CHECK_MODULES([FORM], [form], [
+      have_form=form
+    ], [
+      WITH_SAVE_ENV([
+        AC_CHECK_LIB([form], [form_driver], [
+          have_form=form
+          FORM_CFLAGS=${FORM_CFLAGS-""}
+          FORM_LIBS=${FORM_LIBS-"-lform"}
+        ])
+      ])
+    ])
+  ])
+])dnl ac_cv_header_form_h = yes
 
 dnl pyconfig.h defines _XOPEN_SOURCE=700
 PANEL_CFLAGS=$(echo $PANEL_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
@@ -7260,6 +7297,10 @@ PY_STDLIB_MOD([_curses],
 PY_STDLIB_MOD([_curses_panel],
   [], [test "$have_panel" != "no"],
   [$PANEL_CFLAGS $CURSES_CFLAGS], [$PANEL_LIBS $CURSES_LIBS]
+)
+PY_STDLIB_MOD([_curses_form],
+  [], [test "$have_form" != "no"],
+  [$FORM_CFLAGS], [$FORM_LIBS]
 )
 PY_STDLIB_MOD([_decimal], [], [], [$LIBMPDEC_CFLAGS], [$LIBMPDEC_LDFLAGS])
 PY_STDLIB_MOD([_dbm],
