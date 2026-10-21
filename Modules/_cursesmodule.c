@@ -40,8 +40,8 @@
 
   Here's a list of currently unsupported functions:
 
-  del_curterm mcprint mvcur restartterm
-  ripoffline set_curterm setterm
+    del_curterm mvcur restartterm
+    set_curterm setterm
   tgetent tgetflag tgetnum tgetstr tgoto tputs
   vidattr vidputs
 
@@ -2061,6 +2061,109 @@ PyCursesWindow_New(cursesmodule_state *state,
     }
     PyObject_GC_Track((PyObject *)wo);
     return (PyObject *)wo;
+}
+
+typedef struct {
+    cursesmodule_state *state;
+    PyObject *callbacks[5];
+    PyObject *exception;
+    int count;
+    int index;
+} curses_ripoffline_context;
+
+static curses_ripoffline_context ripoffline_context;
+
+static void
+PyCurses_RipofflineClear(void)
+{
+    for (int i = 0; i < ripoffline_context.count; i++) {
+        Py_CLEAR(ripoffline_context.callbacks[i]);
+    }
+    Py_CLEAR(ripoffline_context.exception);
+    ripoffline_context.state = NULL;
+    ripoffline_context.count = 0;
+    ripoffline_context.index = 0;
+}
+
+static void
+PyCurses_RipofflineSaveException(void)
+{
+    PyObject *type, *value, *traceback;
+    PyErr_Fetch(&type, &value, &traceback);
+    Py_XDECREF(type);
+    Py_XDECREF(traceback);
+    if (ripoffline_context.exception == NULL) {
+        ripoffline_context.exception = value;
+    }
+    else {
+        Py_XDECREF(value);
+    }
+}
+
+static int
+PyCurses_RipofflineCallback(WINDOW *window, int columns)
+{
+    if (ripoffline_context.index >= ripoffline_context.count) {
+        return 0;
+    }
+    PyObject *callback = ripoffline_context.callbacks[ripoffline_context.index++];
+    PyObject *window_object = PyCursesWindow_New(
+        ripoffline_context.state, window, NULL, NULL, NULL);
+    if (window_object == NULL) {
+        PyCurses_RipofflineSaveException();
+        return 0;
+    }
+    PyObject *result = PyObject_CallFunction(callback, "Oi", window_object,
+                                             columns);
+    Py_DECREF(window_object);
+    if (result == NULL) {
+        PyCurses_RipofflineSaveException();
+        return 0;
+    }
+    Py_DECREF(result);
+    return 0;
+}
+
+static int
+PyCurses_RipofflineFinish(void)
+{
+    if (ripoffline_context.exception != NULL) {
+        PyObject *exception = ripoffline_context.exception;
+        PyErr_SetObject((PyObject *)Py_TYPE(exception), exception);
+        PyCurses_RipofflineClear();
+        return -1;
+    }
+    PyCurses_RipofflineClear();
+    return 0;
+}
+
+static PyObject *
+PyCurses_Ripoffline(PyObject *module, PyObject *args)
+{
+    int line;
+    PyObject *callback;
+    if (!PyArg_ParseTuple(args, "iO:ripoffline", &line, &callback)) {
+        return NULL;
+    }
+    if (!PyCallable_Check(callback)) {
+        PyErr_SetString(PyExc_TypeError, "callback must be callable");
+        return NULL;
+    }
+    if (ripoffline_context.count >= 5) {
+        cursesmodule_state *state = get_cursesmodule_state(module);
+        PyErr_SetString(state->error,
+                        "ripoffline() called more than five times");
+        return NULL;
+    }
+    if (ripoffline_context.count == 0) {
+        ripoffline_context.state = get_cursesmodule_state(module);
+    }
+    if (ripoffline(line, PyCurses_RipofflineCallback) == ERR) {
+        return curses_check_err(module, ERR, "ripoffline", NULL);
+    }
+    ripoffline_context.callbacks[ripoffline_context.count++] =
+        Py_NewRef(callback);
+    Py_RETURN_NONE;
 }
 
 static void
@@ -7010,6 +7113,9 @@ _curses_initscr_impl(PyObject *module)
         curses_set_null_error(module, "initscr", NULL);
         return NULL;
     }
+    if (PyCurses_RipofflineFinish() < 0) {
+        return NULL;
+    }
 
     cursesmodule_state *state = get_cursesmodule_state(module);
     if (state->prescreen != NULL) {
@@ -7188,6 +7294,12 @@ _curses_newterm_impl(PyObject *module, const char *type, PyObject *fd,
     SCREEN *screen = newterm((char *)type, outfp, infp);
     if (screen == NULL) {
         curses_set_null_error(module, "newterm", NULL);
+        fclose(outfp);
+        fclose(infp);
+        return NULL;
+    }
+    if (PyCurses_RipofflineFinish() < 0) {
+        delscreen(screen);
         fclose(outfp);
         fclose(infp);
         return NULL;
@@ -7899,6 +8011,111 @@ _curses_putp_impl(PyObject *module, const char *string)
 /*[clinic end generated code: output=e98081d1b8eb5816 input=2f3b9e0f22829ee7]*/
 {
     return curses_check_err(module, putp(string), "putp", NULL);
+}
+
+static PyObject *
+PyCurses_Mcprint(PyObject *module, PyObject *args)
+{
+    const char *text;
+    Py_ssize_t length;
+    int count;
+    if (!PyArg_ParseTuple(args, "s#i:mcprint", &text, &length, &count)) {
+        return NULL;
+    }
+    PyCursesStatefulInitialised(module);
+    return curses_check_err(module, mcprint((char *)text, count),
+                            "mcprint", NULL);
+}
+
+#if defined(HAVE_TERM_H) && !defined(STRICT_SYSV_CURSES)
+static PyObject *
+PyCurses_Tgetent(PyObject *module, PyObject *args)
+{
+    char *term;
+    if (!PyArg_ParseTuple(args, "s:tgetent", &term)) {
+        return NULL;
+    }
+    PyCursesStatefulSetupTermCalled(module);
+    char buffer[2048];
+    return PyLong_FromLong(tgetent(buffer, term));
+}
+
+static PyObject *
+PyCurses_Tgetflag(PyObject *module, PyObject *args)
+{
+    char *id;
+    if (!PyArg_ParseTuple(args, "s:tgetflag", &id)) {
+        return NULL;
+    }
+    PyCursesStatefulSetupTermCalled(module);
+    return PyLong_FromLong(tgetflag(id));
+}
+
+static PyObject *
+PyCurses_Tgetnum(PyObject *module, PyObject *args)
+{
+    char *id;
+    if (!PyArg_ParseTuple(args, "s:tgetnum", &id)) {
+        return NULL;
+    }
+    PyCursesStatefulSetupTermCalled(module);
+    return PyLong_FromLong(tgetnum(id));
+}
+
+static PyObject *
+PyCurses_Tgetstr(PyObject *module, PyObject *args)
+{
+    char *id;
+    if (!PyArg_ParseTuple(args, "s:tgetstr", &id)) {
+        return NULL;
+    }
+    PyCursesStatefulSetupTermCalled(module);
+    char *area = NULL;
+    char *result = tgetstr(id, &area);
+    if (result == NULL || result == (char *)-1) {
+        Py_RETURN_NONE;
+    }
+    return PyBytes_FromString(result);
+}
+
+static PyObject *
+PyCurses_Tgoto(PyObject *module, PyObject *args)
+{
+    char *capability;
+    int col, row;
+    if (!PyArg_ParseTuple(args, "yii:tgoto", &capability, &col, &row)) {
+        return NULL;
+    }
+    PyCursesStatefulSetupTermCalled(module);
+    char *result = tgoto(capability, col, row);
+    if (result == NULL || result == (char *)-1) {
+        Py_RETURN_NONE;
+    }
+    return PyBytes_FromString(result);
+}
+#endif
+
+static PyObject *
+PyCurses_Vidattr(PyObject *module, PyObject *args)
+{
+    unsigned long attrs;
+    if (!PyArg_ParseTuple(args, "k:vidattr", &attrs)) {
+        return NULL;
+    }
+    PyCursesStatefulInitialised(module);
+    return curses_check_err(module, vidattr((chtype)attrs), "vidattr", NULL);
+}
+
+static PyObject *
+PyCurses_Vidputs(PyObject *module, PyObject *args)
+{
+    unsigned long attrs;
+    if (!PyArg_ParseTuple(args, "k:vidputs", &attrs)) {
+        return NULL;
+    }
+    PyCursesStatefulInitialised(module);
+    return curses_check_err(module, vidputs((chtype)attrs, putchar),
+                            "vidputs", NULL);
 }
 
 /*[clinic input]
@@ -9171,6 +9388,7 @@ static PyMethodDef cursesmodule_methods[] = {
     _CURSES_KILLCHAR_METHODDEF
     _CURSES_KILLWCHAR_METHODDEF
     _CURSES_LONGNAME_METHODDEF
+    {"mcprint", (PyCFunction)PyCurses_Mcprint, METH_VARARGS},
     _CURSES_META_METHODDEF
     _CURSES_MOUSEINTERVAL_METHODDEF
     _CURSES_MOUSEMASK_METHODDEF
@@ -9190,6 +9408,15 @@ static PyMethodDef cursesmodule_methods[] = {
     _CURSES_PAIR_CONTENT_METHODDEF
     _CURSES_PAIR_NUMBER_METHODDEF
     _CURSES_PUTP_METHODDEF
+    {"vidattr", (PyCFunction)PyCurses_Vidattr, METH_VARARGS},
+    {"vidputs", (PyCFunction)PyCurses_Vidputs, METH_VARARGS},
+#if defined(HAVE_TERM_H) && !defined(STRICT_SYSV_CURSES)
+    {"tgetent", (PyCFunction)PyCurses_Tgetent, METH_VARARGS},
+    {"tgetflag", (PyCFunction)PyCurses_Tgetflag, METH_VARARGS},
+    {"tgetnum", (PyCFunction)PyCurses_Tgetnum, METH_VARARGS},
+    {"tgetstr", (PyCFunction)PyCurses_Tgetstr, METH_VARARGS},
+    {"tgoto", (PyCFunction)PyCurses_Tgoto, METH_VARARGS},
+#endif
     _CURSES_QIFLUSH_METHODDEF
     _CURSES_RAW_METHODDEF
     _CURSES_RESET_COLOR_PAIRS_METHODDEF
@@ -9198,6 +9425,7 @@ static PyMethodDef cursesmodule_methods[] = {
     _CURSES_RESETTY_METHODDEF
     _CURSES_RESIZETERM_METHODDEF
     _CURSES_RESIZE_TERM_METHODDEF
+    {"ripoffline", (PyCFunction)PyCurses_Ripoffline, METH_VARARGS},
     _CURSES_SAVETTY_METHODDEF
     _CURSES_SCR_DUMP_METHODDEF
     _CURSES_SCR_INIT_METHODDEF
