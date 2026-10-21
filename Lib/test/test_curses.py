@@ -11,6 +11,8 @@ from test.support import (requires, verbose, SaveSignals, cpython_only,
                           check_disallow_instantiation)
 from test.support.import_helper import import_module
 
+menu = None
+
 # Optionally test curses module.  This currently requires that the
 # 'curses' resource be given on the regrtest command line using the -u
 # option.  If not available, nothing after this line will be executed.
@@ -22,6 +24,7 @@ import_module('curses.ascii')
 import_module('curses.textpad')
 try:
     from curses import form
+    from curses import menu
     import curses.panel
 except ImportError:
     pass
@@ -1053,6 +1056,38 @@ class TestCurses(unittest.TestCase):
                 panel.set_userptr(None)
         panel.set_userptr(A())
         panel.set_userptr(None)
+
+    @cpython_only
+    @requires_curses_func('menu')
+    def test_menu_operations(self):
+        win = curses.newwin(5, 20)
+        items = (menu.new_item('One', 'First'),
+                 menu.new_item('Two', 'Second'))
+        m = menu.new_menu(items, win)
+
+        self.assertEqual(m.items(), items)
+        self.assertEqual(m.item_count(), 2)
+        self.assertEqual(items[0].name(), 'One')
+        self.assertEqual(items[0].description(), 'First')
+        self.assertEqual(items[0].index(), 0)
+        self.assertIs(m.current_item(), items[0])
+
+        m.set_current_item(items[1])
+        self.assertIs(m.current_item(), items[1])
+        m.set_mark('> ')
+        self.assertEqual(m.mark(), '> ')
+        m.set_format(2, 1)
+        self.assertEqual(m.format(), (2, 1))
+
+        obj = object()
+        m.set_userptr(obj)
+        self.assertIs(m.userptr(), obj)
+        items[0].set_userptr(obj)
+        self.assertIs(items[0].userptr(), obj)
+
+        m.show()
+        m.driver(menu.REQ_FIRST_ITEM)
+        m.hide()
 
     @cpython_only
     @requires_curses_func('panel')

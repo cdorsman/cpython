@@ -134,6 +134,8 @@
 @MODULE__CURSES_PANEL_TRUE@_curses_panel _curses_panel.c
 # needs -lncurses[w] and -lform[w]
 @MODULE__CURSES_FORM_TRUE@_curses_form _curses_form.c
+# needs -lncurses[w] and -lform[w] and -lmenu[w]
+@MODULE__CURSES_MENU_TRUE@_curses_menu _curses_menu.c
 
 @MODULE__SQLITE3_TRUE@_sqlite3 _sqlite/blob.c _sqlite/connection.c _sqlite/cursor.c _sqlite/microprotocols.c _sqlite/module.c _sqlite/prepare_protocol.c _sqlite/row.c _sqlite/statement.c _sqlite/util.c
 

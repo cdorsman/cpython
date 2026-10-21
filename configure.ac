@@ -6155,9 +6155,11 @@ dnl NOTE: old curses is not detected.
 dnl have_curses=[no, ncursesw, ncurses]
 dnl have_panel=[no, panelw, panel]
 dnl have_form=[no, formw, form]
+dnl have_menu=[no, menuw, menu]
 have_curses=no
 have_panel=no
 have_form=no
+have_menu=no
 
 AH_TEMPLATE([HAVE_NCURSESW], [Define to 1 if you have the `ncursesw' library.])
 AC_CHECK_HEADERS([curses.h ncurses.h])
@@ -6293,9 +6295,45 @@ AS_VAR_IF([ac_cv_header_form_h], [yes], [
   ])
 ])dnl ac_cv_header_form_h = yes
 
+dnl check for ncurses' menu/menuw library
+AC_CHECK_HEADERS([menu.h])
+
+AS_VAR_IF([ac_cv_header_menu_h], [yes], [
+  if test "$ac_sys_system" != "Darwin"; then
+    AS_VAR_IF([have_curses], [ncursesw], [
+      PKG_CHECK_MODULES([MENU], [menuw], [
+        have_menu=menuw
+      ], [
+        WITH_SAVE_ENV([
+          AC_CHECK_LIB([menuw], [menu_driver], [
+            have_menu=menuw
+            MENU_CFLAGS=${MENU_CFLAGS-""}
+            MENU_LIBS=${MENU_LIBS-"-lmenuw"}
+          ])
+        ])
+      ])
+    ])
+  fi
+
+  AS_VAR_IF([have_curses], [ncurses], [
+    PKG_CHECK_MODULES([MENU], [menu], [
+      have_menu=menu
+    ], [
+      WITH_SAVE_ENV([
+        AC_CHECK_LIB([menu], [menu_driver], [
+          have_menu=menu
+          MENU_CFLAGS=${MENU_CFLAGS-""}
+          MENU_LIBS=${MENU_LIBS-"-lmenu"}
+        ])
+      ])
+    ])
+  ])
+])dnl ac_cv_header_menu_h = yes
+
 dnl pyconfig.h defines _XOPEN_SOURCE=700
 PANEL_CFLAGS=$(echo $PANEL_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
 FORM_CFLAGS=$(echo $FORM_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
+MENU_CFLAGS=$(echo $MENU_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
 
 AC_MSG_CHECKING([panel flags])
 AS_VAR_IF([have_panel], [no], [
@@ -6309,6 +6347,13 @@ AS_VAR_IF([have_form], [no], [
   AC_MSG_RESULT([no])
 ], [
   AC_MSG_RESULT([$have_form (CFLAGS: $FORM_CFLAGS, LIBS: $FORM_LIBS)])
+])
+
+AC_MSG_CHECKING([menu flags])
+AS_VAR_IF([have_menu], [no], [
+  AC_MSG_RESULT([no])
+], [
+  AC_MSG_RESULT([$have_menu (CFLAGS: $MENU_CFLAGS, LIBS: $MENU_LIBS)])
 ])
 
 # first curses header check
@@ -7309,6 +7354,10 @@ PY_STDLIB_MOD([_curses_panel],
 PY_STDLIB_MOD([_curses_form],
   [], [test "$have_form" != "no"],
   [$FORM_CFLAGS], [$FORM_LIBS]
+)
+PY_STDLIB_MOD([_curses_menu],
+  [], [test "$have_menu" != "no"],
+  [$MENU_CFLAGS], [$MENU_LIBS]
 )
 PY_STDLIB_MOD([_decimal], [], [], [$LIBMPDEC_CFLAGS], [$LIBMPDEC_LDFLAGS])
 PY_STDLIB_MOD([_dbm],
