@@ -1,5 +1,5 @@
 /*
- *   Interface to the ncurses panel library
+ *   Interface to the ncurses form library
  *
  * Original version by Thomas Gellekum
  */
@@ -19,12 +19,8 @@ static const char PyCursesVersion[] = "0.1";
 typedef struct {
     PyObject *PyCursesError;
     PyTypeObject *PyCursesForm_Type;
-} _curses_form_state;
-
-typedef struct {
-    PyObject *PyCursesError;
     PyTypeObject *PyCursesField_Type;
-} _curses_field_state;
+} _curses_form_state;
 
 static inline _curses_form_state *
 get_curses_form_state(PyObject *module)
@@ -35,28 +31,30 @@ get_curses_form_state(PyObject *module)
 }
 
 static int
-_curses_panel_clear(PyObject *mod)
+_curses_form_clear(PyObject *mod)
 {
-    _curses_panel_state *state = get_curses_panel_state(mod);
+    _curses_form_state *state = get_curses_form_state(mod);
     Py_CLEAR(state->PyCursesError);
-    Py_CLEAR(state->PyCursesPanel_Type);
+    Py_CLEAR(state->PyCursesForm_Type);
+    Py_CLEAR(state->PyCursesField_Type);
     return 0;
 }
 
 static int
-_curses_panel_traverse(PyObject *mod, visitproc visit, void *arg)
+_curses_form_traverse(PyObject *mod, visitproc visit, void *arg)
 {
     Py_VISIT(Py_TYPE(mod));
-    _curses_panel_state *state = get_curses_panel_state(mod);
+    _curses_form_state *state = get_curses_form_state(mod);
     Py_VISIT(state->PyCursesError);
-    Py_VISIT(state->PyCursesPanel_Type);
+    Py_VISIT(state->PyCursesForm_Type);
+    Py_VISIT(state->PyCursesField_Type);
     return 0;
 }
 
 static void
-_curses_panel_free(void *mod)
+_curses_form_free(void *mod)
 {
-    _curses_panel_clear((PyObject *) mod);
+    _curses_form_clear((PyObject *) mod);
 }
 
 /* Utility Functions */
@@ -67,7 +65,7 @@ _curses_panel_free(void *mod)
  */
 
 static PyObject *
-PyCursesCheckERR(_curses_panel_state *state, int code, const char *fname)
+PyCursesCheckERR(_curses_form_state *state, int code, const char *fname)
 {
     if (code != ERR) {
         Py_RETURN_NONE;
@@ -84,74 +82,80 @@ PyCursesCheckERR(_curses_panel_state *state, int code, const char *fname)
 }
 
 /*****************************************************************************
- The Panel Object
+ The form Object
 ******************************************************************************/
 
-/* Definition of the panel object and panel type */
+/* Definition of the form object and form type */
 
 typedef struct {
     PyObject_HEAD
-    PANEL *pan;
+    FORM *form;
     PyCursesWindowObject *wo;   /* for reference counts */
-} PyCursesPanelObject;
+    PyObject *fields;            /* references to the form's field objects */
+} PyCursesFormObject;
+
+typedef struct {
+    PyObject_HEAD
+    FIELD *field;
+} PyCursesFieldObject;
 
 /* Some helper functions. The problem is that there's always a window
-   associated with a panel. To ensure that Python's GC doesn't pull
+   associated with a form. To ensure that Python's GC doesn't pull
    this window from under our feet we need to keep track of references
    to the corresponding window object within Python. We can't use
    dupwin(oldwin) to keep a copy of the curses WINDOW because the
    contents of oldwin is copied only once; code like
 
    win = newwin(...)
-   pan = win.panel()
+   pan = new_form(win)
    win.addstr(some_string)
    pan.window().addstr(other_string)
 
    will fail. */
 
-/* We keep a linked list of PyCursesPanelObjects, lop. A list should
+/* We keep a linked list of PyCursesFormObjects, lop. A list should
    suffice, I don't expect more than a handful or at most a few
-   dozens of panel objects within a typical program. */
-typedef struct _list_of_panels {
-    PyCursesPanelObject *po;
-    struct _list_of_panels *next;
-} list_of_panels;
+   dozens of form objects within a typical program. */
+typedef struct _list_of_forms {
+    PyCursesFormObject *fo;
+    struct _list_of_forms *next;
+} list_of_forms;
 
 /* list anchor */
-static list_of_panels *lop;
+static list_of_forms *lof;
 
-/* Insert a new panel object into lop */
+/* Insert a new form object into lop */
 static int
-insert_lop(PyCursesPanelObject *po)
+insert_lof(PyCursesFormObject *fo)
 {
-    list_of_panels *new;
+    list_of_forms *new;
 
-    if ((new = (list_of_panels *)PyMem_Malloc(sizeof(list_of_panels))) == NULL) {
+    if ((new = (list_of_forms *)PyMem_Malloc(sizeof(list_of_forms))) == NULL) {
         PyErr_NoMemory();
         return -1;
     }
-    new->po = po;
-    new->next = lop;
-    lop = new;
+    new->fo = fo;
+    new->next = lof;
+    lof = new;
     return 0;
 }
 
-/* Remove the panel object from lop */
+/* Remove the form object from lop */
 static void
-remove_lop(PyCursesPanelObject *po)
+remove_lof(PyCursesFormObject *fo)
 {
-    list_of_panels *temp, *n;
+    list_of_forms *temp, *n;
 
-    temp = lop;
-    if (temp->po == po) {
-        lop = temp->next;
+    temp = lof;
+    if (temp->fo == fo) {
+        lof = temp->next;
         PyMem_Free(temp);
         return;
     }
-    while (temp->next == NULL || temp->next->po != po) {
+    while (temp->next == NULL || temp->next->fo != fo) {
         if (temp->next == NULL) {
             PyErr_SetString(PyExc_RuntimeError,
-                            "remove_lop: can't find Panel Object");
+                            "remove_lof: can't find form Object");
             return;
         }
         temp = temp->next;
@@ -162,296 +166,176 @@ remove_lop(PyCursesPanelObject *po)
     return;
 }
 
-/* Return the panel object that corresponds to pan */
-static PyCursesPanelObject *
-find_po(PANEL *pan)
-{
-    list_of_panels *temp;
-    for (temp = lop; temp->po->pan != pan; temp = temp->next)
-        if (temp->next == NULL) return NULL;    /* not found!? */
-    return temp->po;
-}
-
 /*[clinic input]
-module _curses_panel
-class _curses_panel.panel "PyCursesPanelObject *" "&PyCursesPanel_Type"
+module _curses_form
+class _curses_form.form "PyCursesFormObject *" "&PyCursesForm_Type"
+class _curses_form.field "PyCursesFieldObject *" "&PyCursesField_Type"
 [clinic start generated code]*/
-/*[clinic end generated code: output=da39a3ee5e6b4b0d input=2f4ef263ca850a31]*/
+/*[clinic end generated code: output=da39a3ee5e6b4b0d input=3944205d14b113e8]*/
 
-#include "clinic/_curses_panel.c.h"
+#include "clinic/_curses_form.c.h"
 
-/* ------------- PANEL routines --------------- */
+/* ------------- form routines --------------- */
 
 /*[clinic input]
-_curses_panel.panel.bottom
+_curses_form.form.driver
 
-    cls: defining_class
+    request: int
+    /
 
-Push the panel to the bottom of the stack.
+Process one form request.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_bottom_impl(PyCursesPanelObject *self, PyTypeObject *cls)
-/*[clinic end generated code: output=8ec7fbbc08554021 input=6b7d2c0578b5a1c4]*/
+_curses_form_form_driver_impl(PyCursesFormObject *self, int request)
+/*[clinic end generated code: output=59a4e3f25455a481 input=e5e6bbc7be12289e]*/
 {
-    _curses_panel_state *state = PyType_GetModuleState(cls);
-    return PyCursesCheckERR(state, bottom_panel(self->pan), "bottom");
+    int result = form_driver(self->form, request);
+
+    if (result != E_OK) {
+        PyErr_SetString(PyExc_RuntimeError, "form_driver() failed");
+        return NULL;
+    }
+
+    Py_RETURN_NONE;
 }
 
 /*[clinic input]
-_curses_panel.panel.hide
+_curses_form.form.hide
 
     cls: defining_class
 
-Hide the panel.
+Hide the form.
 
 This does not delete the object, it just makes the window on screen invisible.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_hide_impl(PyCursesPanelObject *self, PyTypeObject *cls)
-/*[clinic end generated code: output=cc6ab7203cdc1450 input=1bfc741f473e6055]*/
+_curses_form_form_hide_impl(PyCursesFormObject *self, PyTypeObject *cls)
+/*[clinic end generated code: output=f6b0cc5d6532fe9e input=3b625f61fa9435b1]*/
 {
-    _curses_panel_state *state = PyType_GetModuleState(cls);
-    return PyCursesCheckERR(state, hide_panel(self->pan), "hide");
+    _curses_form_state *state = PyType_GetModuleState(cls);
+    return PyCursesCheckERR(state, unpost_form(self->form), "unpost_form");
 }
 
 /*[clinic input]
-_curses_panel.panel.show
+_curses_form.form.show
 
     cls: defining_class
 
-Display the panel (which might have been hidden).
+Display the form (which might have been hidden).
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_show_impl(PyCursesPanelObject *self, PyTypeObject *cls)
-/*[clinic end generated code: output=dc3421de375f0409 input=8122e80151cb4379]*/
+_curses_form_form_show_impl(PyCursesFormObject *self, PyTypeObject *cls)
+/*[clinic end generated code: output=0a12482994b4691f input=422c5b32b671a402]*/
 {
-    _curses_panel_state *state = PyType_GetModuleState(cls);
-    return PyCursesCheckERR(state, show_panel(self->pan), "show");
+    _curses_form_state *state = PyType_GetModuleState(cls);
+    return PyCursesCheckERR(state, post_form(self->form), "post_form");
 }
 
-/*[clinic input]
-_curses_panel.panel.top
-
-    cls: defining_class
-
-Push panel to the top of the stack.
-[clinic start generated code]*/
+/* Allocation and deallocation of form Objects */
 
 static PyObject *
-_curses_panel_panel_top_impl(PyCursesPanelObject *self, PyTypeObject *cls)
-/*[clinic end generated code: output=10a072e511e873f7 input=1f372d597dda3379]*/
+PyCursesForm_New(_curses_form_state *state, FORM *form,
+                  PyCursesWindowObject *wo, PyObject *fields)
 {
-    _curses_panel_state *state = PyType_GetModuleState(cls);
-    return PyCursesCheckERR(state, top_panel(self->pan), "top");
-}
-
-/* Allocation and deallocation of Panel Objects */
-
-static PyObject *
-PyCursesPanel_New(_curses_panel_state *state, PANEL *pan,
-                  PyCursesWindowObject *wo)
-{
-    PyCursesPanelObject *po = PyObject_New(PyCursesPanelObject,
-                                           state->PyCursesPanel_Type);
-    if (po == NULL) {
+    PyCursesFormObject *fo = PyObject_New(PyCursesFormObject,
+                                           state->PyCursesForm_Type);
+    if (fo == NULL) {
         return NULL;
     }
 
-    po->pan = pan;
-    if (insert_lop(po) < 0) {
-        po->wo = NULL;
-        Py_DECREF(po);
+    fo->form = form;
+    fo->wo = NULL;
+    fo->fields = Py_NewRef(fields);
+    if (insert_lof(fo) < 0) {
+        Py_DECREF(fo);
         return NULL;
     }
-    po->wo = (PyCursesWindowObject*)Py_NewRef(wo);
-    return (PyObject *)po;
+    fo->wo = (PyCursesWindowObject*)Py_NewRef(wo);
+    return (PyObject *)fo;
 }
 
 static void
-PyCursesPanel_Dealloc(PyCursesPanelObject *po)
+PyCursesForm_Dealloc(PyCursesFormObject *fo)
 {
     PyObject *tp, *obj;
 
-    tp = (PyObject *) Py_TYPE(po);
-    obj = (PyObject *) panel_userptr(po->pan);
+    tp = (PyObject *) Py_TYPE(fo);
+    obj = (PyObject *) form_userptr(fo->form);
     if (obj) {
-        (void)set_panel_userptr(po->pan, NULL);
+        (void)set_form_userptr(fo->form, NULL);
         Py_DECREF(obj);
     }
-    (void)del_panel(po->pan);
-    if (po->wo != NULL) {
-        Py_DECREF(po->wo);
-        remove_lop(po);
+    (void)free_form(fo->form);
+    if (fo->wo != NULL) {
+        Py_DECREF(fo->wo);
+        remove_lof(fo);
     }
-    PyObject_Free(po);
+    Py_DECREF(fo->fields);
+    PyObject_Free(fo);
     Py_DECREF(tp);
 }
 
-/* panel_above(NULL) returns the bottom panel in the stack. To get
-   this behaviour we use curses.panel.bottom_panel(). */
 /*[clinic input]
-_curses_panel.panel.above
+_curses_form.form.window
 
-Return the panel above the current panel.
+Return the window object associated with the form.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_above_impl(PyCursesPanelObject *self)
-/*[clinic end generated code: output=70ac06d25fd3b4da input=c059994022976788]*/
-{
-    PANEL *pan;
-    PyCursesPanelObject *po;
-
-    pan = panel_above(self->pan);
-
-    if (pan == NULL) {          /* valid output, it means the calling panel
-                                   is on top of the stack */
-        Py_RETURN_NONE;
-    }
-    po = find_po(pan);
-    if (po == NULL) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "panel_above: can't find Panel Object");
-        return NULL;
-    }
-    return Py_NewRef(po);
-}
-
-/* panel_below(NULL) returns the top panel in the stack. To get
-   this behaviour we use curses.panel.top_panel(). */
-/*[clinic input]
-_curses_panel.panel.below
-
-Return the panel below the current panel.
-[clinic start generated code]*/
-
-static PyObject *
-_curses_panel_panel_below_impl(PyCursesPanelObject *self)
-/*[clinic end generated code: output=282861122e06e3de input=cc08f61936d297c6]*/
-{
-    PANEL *pan;
-    PyCursesPanelObject *po;
-
-    pan = panel_below(self->pan);
-
-    if (pan == NULL) {          /* valid output, it means the calling panel
-                                   is on the bottom of the stack */
-        Py_RETURN_NONE;
-    }
-    po = find_po(pan);
-    if (po == NULL) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "panel_below: can't find Panel Object");
-        return NULL;
-    }
-    return Py_NewRef(po);
-}
-
-/*[clinic input]
-_curses_panel.panel.hidden
-
-Return True if the panel is hidden (not visible), False otherwise.
-[clinic start generated code]*/
-
-static PyObject *
-_curses_panel_panel_hidden_impl(PyCursesPanelObject *self)
-/*[clinic end generated code: output=66eebd1ab4501a71 input=453d4b4fce25e21a]*/
-{
-    if (panel_hidden(self->pan))
-        Py_RETURN_TRUE;
-    else
-        Py_RETURN_FALSE;
-}
-
-/*[clinic input]
-_curses_panel.panel.move
-
-    cls: defining_class
-    y: int
-    x: int
-    /
-
-Move the panel to the screen coordinates (y, x).
-[clinic start generated code]*/
-
-static PyObject *
-_curses_panel_panel_move_impl(PyCursesPanelObject *self, PyTypeObject *cls,
-                              int y, int x)
-/*[clinic end generated code: output=ce546c93e56867da input=60a0e7912ff99849]*/
-{
-    _curses_panel_state *state = PyType_GetModuleState(cls);
-    return PyCursesCheckERR(state, move_panel(self->pan, y, x), "move_panel");
-}
-
-/*[clinic input]
-_curses_panel.panel.window
-
-Return the window object associated with the panel.
-[clinic start generated code]*/
-
-static PyObject *
-_curses_panel_panel_window_impl(PyCursesPanelObject *self)
-/*[clinic end generated code: output=5f05940d4106b4cb input=6067353d2c307901]*/
+_curses_form_form_window_impl(PyCursesFormObject *self)
+/*[clinic end generated code: output=69f6d03a0d266a98 input=06e1c6da497f81bb]*/
 {
     return Py_NewRef(self->wo);
 }
 
 /*[clinic input]
-_curses_panel.panel.replace
+_curses_form.form.replace
 
     cls: defining_class
     win: object(type="PyCursesWindowObject *", subclass_of="&PyCursesWindow_Type")
     /
 
-Change the window associated with the panel to the window win.
+Change the window associated with the form to the window win.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_replace_impl(PyCursesPanelObject *self,
-                                 PyTypeObject *cls,
-                                 PyCursesWindowObject *win)
-/*[clinic end generated code: output=c71f95c212d58ae7 input=dbec7180ece41ff5]*/
+_curses_form_form_replace_impl(PyCursesFormObject *self, PyTypeObject *cls,
+                               PyCursesWindowObject *win)
+/*[clinic end generated code: output=7c1c1240cdd2300c input=222017a31c704536]*/
 {
-    _curses_panel_state *state = PyType_GetModuleState(cls);
+    _curses_form_state *state = PyType_GetModuleState(cls);
 
-    PyCursesPanelObject *po = find_po(self->pan);
-    if (po == NULL) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "replace_panel: can't find Panel Object");
+    int rtn = set_form_win(self->form, win->win);
+    if (rtn != E_OK) {
+        PyErr_SetString(state->PyCursesError, "set_form_win() failed");
         return NULL;
     }
-
-    int rtn = replace_panel(self->pan, win->win);
-    if (rtn == ERR) {
-        PyErr_SetString(state->PyCursesError, "replace_panel() returned ERR");
-        return NULL;
-    }
-    Py_SETREF(po->wo, (PyCursesWindowObject*)Py_NewRef(win));
+    Py_SETREF(self->wo, (PyCursesWindowObject*)Py_NewRef(win));
     Py_RETURN_NONE;
 }
 
 /*[clinic input]
-_curses_panel.panel.set_userptr
+_curses_form.form.set_userptr
 
     cls: defining_class
     obj: object
     /
 
-Set the panel's user pointer to obj.
+Set the form's user pointer to obj.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_set_userptr_impl(PyCursesPanelObject *self,
-                                     PyTypeObject *cls, PyObject *obj)
-/*[clinic end generated code: output=db74f3db07b28080 input=e3fee2ff7b1b8e48]*/
+_curses_form_form_set_userptr_impl(PyCursesFormObject *self,
+                                   PyTypeObject *cls, PyObject *obj)
+/*[clinic end generated code: output=c5331e4d470224ce input=44451e974a71bb14]*/
 {
     PyCursesInitialised;
     Py_INCREF(obj);
-    PyObject *oldobj = (PyObject *) panel_userptr(self->pan);
-    int rc = set_panel_userptr(self->pan, (void*)obj);
+    PyObject *oldobj = (PyObject *) form_userptr(self->form);
+    int rc = set_form_userptr(self->form, (void*)obj);
     if (rc == ERR) {
         /* In case of an ncurses error, decref the new object again */
         Py_DECREF(obj);
@@ -460,27 +344,26 @@ _curses_panel_panel_set_userptr_impl(PyCursesPanelObject *self,
         Py_XDECREF(oldobj);
     }
 
-    _curses_panel_state *state = PyType_GetModuleState(cls);
-    return PyCursesCheckERR(state, rc, "set_panel_userptr");
+    _curses_form_state *state = PyType_GetModuleState(cls);
+    return PyCursesCheckERR(state, rc, "set_form_userptr");
 }
 
 /*[clinic input]
-_curses_panel.panel.userptr
+_curses_form.form.userptr
 
     cls: defining_class
 
-Return the user pointer for the panel.
+Return the user pointer for the form.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_panel_userptr_impl(PyCursesPanelObject *self,
-                                 PyTypeObject *cls)
-/*[clinic end generated code: output=eea6e6f39ffc0179 input=f22ca4f115e30a80]*/
+_curses_form_form_userptr_impl(PyCursesFormObject *self, PyTypeObject *cls)
+/*[clinic end generated code: output=68045d893830da6d input=15cf6e5f55dc19f0]*/
 {
-    _curses_panel_state *state = PyType_GetModuleState(cls);
+    _curses_form_state *state = PyType_GetModuleState(cls);
 
     PyCursesInitialised;
-    PyObject *obj = (PyObject *) panel_userptr(self->pan);
+    PyObject *obj = (PyObject *) form_userptr(self->form);
     if (obj == NULL) {
         PyErr_SetString(state->PyCursesError, "no userptr set");
         return NULL;
@@ -492,153 +375,262 @@ _curses_panel_panel_userptr_impl(PyCursesPanelObject *self,
 
 /* Module interface */
 
-static PyMethodDef PyCursesPanel_Methods[] = {
-    _CURSES_PANEL_PANEL_ABOVE_METHODDEF
-    _CURSES_PANEL_PANEL_BELOW_METHODDEF
-    _CURSES_PANEL_PANEL_BOTTOM_METHODDEF
-    _CURSES_PANEL_PANEL_HIDDEN_METHODDEF
-    _CURSES_PANEL_PANEL_HIDE_METHODDEF
-    _CURSES_PANEL_PANEL_MOVE_METHODDEF
-    _CURSES_PANEL_PANEL_REPLACE_METHODDEF
-    _CURSES_PANEL_PANEL_SET_USERPTR_METHODDEF
-    _CURSES_PANEL_PANEL_SHOW_METHODDEF
-    _CURSES_PANEL_PANEL_TOP_METHODDEF
-    _CURSES_PANEL_PANEL_USERPTR_METHODDEF
-    _CURSES_PANEL_PANEL_WINDOW_METHODDEF
+static PyMethodDef PyCursesForm_Methods[] = {
+    _CURSES_FORM_FORM_DRIVER_METHODDEF
+    _CURSES_FORM_FORM_HIDE_METHODDEF
+    _CURSES_FORM_FORM_REPLACE_METHODDEF
+    _CURSES_FORM_FORM_SET_USERPTR_METHODDEF
+    _CURSES_FORM_FORM_SHOW_METHODDEF
+    _CURSES_FORM_FORM_USERPTR_METHODDEF
+    _CURSES_FORM_FORM_WINDOW_METHODDEF
     {NULL,              NULL}   /* sentinel */
 };
 
 /* -------------------------------------------------------*/
 
-static PyType_Slot PyCursesPanel_Type_slots[] = {
-    {Py_tp_dealloc, PyCursesPanel_Dealloc},
-    {Py_tp_methods, PyCursesPanel_Methods},
+static PyType_Slot PyCursesForm_Type_slots[] = {
+    {Py_tp_dealloc, PyCursesForm_Dealloc},
+    {Py_tp_methods, PyCursesForm_Methods},
     {0, 0},
 };
 
-static PyType_Spec PyCursesPanel_Type_spec = {
-    .name = "_curses_panel.panel",
-    .basicsize = sizeof(PyCursesPanelObject),
+static PyType_Spec PyCursesForm_Type_spec = {
+    .name = "_curses_form.form",
+    .basicsize = sizeof(PyCursesFormObject),
     .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
-    .slots = PyCursesPanel_Type_slots
+    .slots = PyCursesForm_Type_slots
 };
 
-/* Wrapper for panel_above(NULL). This function returns the bottom
-   panel of the stack, so it's renamed to bottom_panel().
-   panel.above() *requires* a panel object in the first place which
-   may be undesirable. */
-/*[clinic input]
-_curses_panel.bottom_panel
+static void
+PyCursesField_Dealloc(PyCursesFieldObject *self)
+{
+    (void)free_field(self->field);
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
 
-Return the bottom panel in the panel stack.
+static PyMethodDef PyCursesField_Methods[];
+
+static PyType_Slot PyCursesField_Type_slots[] = {
+    {Py_tp_dealloc, PyCursesField_Dealloc},
+    {Py_tp_methods, PyCursesField_Methods},
+    {0, 0},
+};
+
+static PyType_Spec PyCursesField_Type_spec = {
+    .name = "_curses_form.field",
+    .basicsize = sizeof(PyCursesFieldObject),
+    .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .slots = PyCursesField_Type_slots
+};
+
+/*[clinic input]
+_curses_form.field.set_new_page
+
+    cls: defining_class
+    new_page: bool
+    /
+
+Mark this field as the start of a new form page.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_bottom_panel_impl(PyObject *module)
-/*[clinic end generated code: output=3aba9f985f4c2bd0 input=634c2a8078b3d7e4]*/
+_curses_form_field_set_new_page_impl(PyCursesFieldObject *self,
+                                     PyTypeObject *cls, int new_page)
+/*[clinic end generated code: output=47156adb500296f6 input=b7b591df4a0423da]*/
 {
-    PANEL *pan;
-    PyCursesPanelObject *po;
-
-    PyCursesInitialised;
-
-    pan = panel_above(NULL);
-
-    if (pan == NULL) {          /* valid output, it means
-                                   there's no panel at all */
-        Py_RETURN_NONE;
-    }
-    po = find_po(pan);
-    if (po == NULL) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "panel_above: can't find Panel Object");
-        return NULL;
-    }
-    return Py_NewRef(po);
+    _curses_form_state *state = PyType_GetModuleState(cls);
+    return PyCursesCheckERR(state, set_new_page(self->field, new_page),
+                            "set_new_page");
 }
 
 /*[clinic input]
-_curses_panel.new_panel
+_curses_form.field.new_page
 
-    win: object(type="PyCursesWindowObject *", subclass_of="&PyCursesWindow_Type")
-    /
-
-Return a panel object, associating it with the given window win.
+Return True if this field starts a new form page.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_new_panel_impl(PyObject *module, PyCursesWindowObject *win)
-/*[clinic end generated code: output=45e948e0176a9bd2 input=74d4754e0ebe4800]*/
+_curses_form_field_new_page_impl(PyCursesFieldObject *self)
+/*[clinic end generated code: output=a0a8aa52215c9bc4 input=e9fca7e56c8ddc74]*/
 {
-    _curses_panel_state *state = get_curses_panel_state(module);
+    if (new_page(self->field)) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
 
-    PANEL *pan = new_panel(win->win);
-    if (pan == NULL) {
+static PyMethodDef PyCursesField_Methods[] = {
+    _CURSES_FORM_FIELD_NEW_PAGE_METHODDEF
+    _CURSES_FORM_FIELD_SET_NEW_PAGE_METHODDEF
+    {NULL, NULL}
+};
+
+/*[clinic input]
+_curses_form.new_field
+
+    rows: int
+    cols: int
+    frow: int
+    fcol: int
+    offrow: int
+    offcol: int
+    /
+
+Create a form field.
+[clinic start generated code]*/
+
+static PyObject *
+_curses_form_new_field_impl(PyObject *module, int rows, int cols, int frow,
+                            int fcol, int offrow, int offcol)
+/*[clinic end generated code: output=42b75de2c4f6dc16 input=5888ca53fc073536]*/
+{
+    _curses_form_state *state = get_curses_form_state(module);
+    FIELD *field = new_field(rows, cols, frow, fcol, offrow, offcol);
+    if (field == NULL) {
         PyErr_SetString(state->PyCursesError, catchall_NULL);
         return NULL;
     }
-    return (PyObject *)PyCursesPanel_New(state, pan, win);
-}
 
-
-/* Wrapper for panel_below(NULL). This function returns the top panel
-   of the stack, so it's renamed to top_panel(). panel.below()
-   *requires* a panel object in the first place which may be
-   undesirable. */
-/*[clinic input]
-_curses_panel.top_panel
-
-Return the top panel in the panel stack.
-[clinic start generated code]*/
-
-static PyObject *
-_curses_panel_top_panel_impl(PyObject *module)
-/*[clinic end generated code: output=86704988bea8508e input=e62d6278dba39e79]*/
-{
-    PANEL *pan;
-    PyCursesPanelObject *po;
-
-    PyCursesInitialised;
-
-    pan = panel_below(NULL);
-
-    if (pan == NULL) {          /* valid output, it means
-                                   there's no panel at all */
-        Py_RETURN_NONE;
-    }
-    po = find_po(pan);
-    if (po == NULL) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "panel_below: can't find Panel Object");
+    PyCursesFieldObject *result = PyObject_New(
+        PyCursesFieldObject, state->PyCursesField_Type);
+    if (result == NULL) {
+        free_field(field);
         return NULL;
     }
-    return Py_NewRef(po);
+    result->field = field;
+    return (PyObject *)result;
 }
 
+
 /*[clinic input]
-_curses_panel.update_panels
+_curses_form.new_form
 
-Updates the virtual screen after changes in the panel stack.
+    fields: object
+    win: object(type="PyCursesWindowObject *", subclass_of="&PyCursesWindow_Type")
+    /
 
-This does not call curses.doupdate(), so you'll have to do this yourself.
+Create a form from field objects and associate it with window win.
 [clinic start generated code]*/
 
 static PyObject *
-_curses_panel_update_panels_impl(PyObject *module)
-/*[clinic end generated code: output=2f3b4c2e03d90ded input=5299624c9a708621]*/
+_curses_form_new_form_impl(PyObject *module, PyObject *fields,
+                           PyCursesWindowObject *win)
+/*[clinic end generated code: output=9e65e89a2d484429 input=39c31b74ffdbf6db]*/
 {
-    PyCursesInitialised;
-    update_panels();
-    Py_RETURN_NONE;
+    _curses_form_state *state = get_curses_form_state(module);
+
+    PyObject *field_sequence = PySequence_Fast(fields, "fields must be a sequence");
+    if (field_sequence == NULL) {
+        return NULL;
+    }
+
+    Py_ssize_t field_count = PySequence_Fast_GET_SIZE(field_sequence);
+    if (field_count > INT_MAX - 1) {
+        Py_DECREF(field_sequence);
+        PyErr_SetString(PyExc_OverflowError, "too many fields");
+        return NULL;
+    }
+
+    FIELD **native_fields = PyMem_Malloc(
+        ((size_t)field_count + 1) * sizeof(*native_fields));
+    if (native_fields == NULL) {
+        Py_DECREF(field_sequence);
+        return PyErr_NoMemory();
+    }
+
+    PyObject **items = PySequence_Fast_ITEMS(field_sequence);
+    for (Py_ssize_t i = 0; i < field_count; i++) {
+        if (!PyObject_TypeCheck(items[i], state->PyCursesField_Type)) {
+            PyMem_Free(native_fields);
+            Py_DECREF(field_sequence);
+            PyErr_SetString(PyExc_TypeError,
+                            "fields must contain _curses_form.field objects");
+            return NULL;
+        }
+        native_fields[i] = ((PyCursesFieldObject *)items[i])->field;
+    }
+    native_fields[field_count] = NULL;
+
+    FORM *form = new_form(native_fields);
+    PyMem_Free(native_fields);
+    if (form == NULL) {
+        Py_DECREF(field_sequence);
+        PyErr_SetString(state->PyCursesError, catchall_NULL);
+        return NULL;
+    }
+    PyObject *result = PyCursesForm_New(state, form, win, field_sequence);
+    Py_DECREF(field_sequence);
+    return result;
 }
 
 /* List of functions defined in the module */
 static PyMethodDef PyCurses_methods[] = {
-    _CURSES_PANEL_BOTTOM_PANEL_METHODDEF
-    _CURSES_PANEL_NEW_PANEL_METHODDEF
-    _CURSES_PANEL_TOP_PANEL_METHODDEF
-    _CURSES_PANEL_UPDATE_PANELS_METHODDEF
+    _CURSES_FORM_NEW_FIELD_METHODDEF
+    _CURSES_FORM_NEW_FORM_METHODDEF
     {NULL,              NULL}           /* sentinel */
+};
+
+static const struct {
+    const char *name;
+    int value;
+} form_requests[] = {
+    {"REQ_NEXT_PAGE", REQ_NEXT_PAGE},
+    {"REQ_PREV_PAGE", REQ_PREV_PAGE},
+    {"REQ_FIRST_PAGE", REQ_FIRST_PAGE},
+    {"REQ_LAST_PAGE", REQ_LAST_PAGE},
+    {"REQ_NEXT_FIELD", REQ_NEXT_FIELD},
+    {"REQ_PREV_FIELD", REQ_PREV_FIELD},
+    {"REQ_FIRST_FIELD", REQ_FIRST_FIELD},
+    {"REQ_LAST_FIELD", REQ_LAST_FIELD},
+    {"REQ_SNEXT_FIELD", REQ_SNEXT_FIELD},
+    {"REQ_SPREV_FIELD", REQ_SPREV_FIELD},
+    {"REQ_SFIRST_FIELD", REQ_SFIRST_FIELD},
+    {"REQ_SLAST_FIELD", REQ_SLAST_FIELD},
+    {"REQ_LEFT_FIELD", REQ_LEFT_FIELD},
+    {"REQ_RIGHT_FIELD", REQ_RIGHT_FIELD},
+    {"REQ_UP_FIELD", REQ_UP_FIELD},
+    {"REQ_DOWN_FIELD", REQ_DOWN_FIELD},
+    {"REQ_NEXT_CHAR", REQ_NEXT_CHAR},
+    {"REQ_PREV_CHAR", REQ_PREV_CHAR},
+    {"REQ_NEXT_LINE", REQ_NEXT_LINE},
+    {"REQ_PREV_LINE", REQ_PREV_LINE},
+    {"REQ_NEXT_WORD", REQ_NEXT_WORD},
+    {"REQ_PREV_WORD", REQ_PREV_WORD},
+    {"REQ_BEG_FIELD", REQ_BEG_FIELD},
+    {"REQ_END_FIELD", REQ_END_FIELD},
+    {"REQ_BEG_LINE", REQ_BEG_LINE},
+    {"REQ_END_LINE", REQ_END_LINE},
+    {"REQ_LEFT_CHAR", REQ_LEFT_CHAR},
+    {"REQ_RIGHT_CHAR", REQ_RIGHT_CHAR},
+    {"REQ_UP_CHAR", REQ_UP_CHAR},
+    {"REQ_DOWN_CHAR", REQ_DOWN_CHAR},
+    {"REQ_NEW_LINE", REQ_NEW_LINE},
+    {"REQ_INS_CHAR", REQ_INS_CHAR},
+    {"REQ_INS_LINE", REQ_INS_LINE},
+    {"REQ_DEL_CHAR", REQ_DEL_CHAR},
+    {"REQ_DEL_PREV", REQ_DEL_PREV},
+    {"REQ_DEL_LINE", REQ_DEL_LINE},
+    {"REQ_DEL_WORD", REQ_DEL_WORD},
+    {"REQ_CLR_EOL", REQ_CLR_EOL},
+    {"REQ_CLR_EOF", REQ_CLR_EOF},
+    {"REQ_CLR_FIELD", REQ_CLR_FIELD},
+    {"REQ_OVL_MODE", REQ_OVL_MODE},
+    {"REQ_INS_MODE", REQ_INS_MODE},
+    {"REQ_SCR_FLINE", REQ_SCR_FLINE},
+    {"REQ_SCR_BLINE", REQ_SCR_BLINE},
+    {"REQ_SCR_FPAGE", REQ_SCR_FPAGE},
+    {"REQ_SCR_BPAGE", REQ_SCR_BPAGE},
+    {"REQ_SCR_FHPAGE", REQ_SCR_FHPAGE},
+    {"REQ_SCR_BHPAGE", REQ_SCR_BHPAGE},
+    {"REQ_SCR_FCHAR", REQ_SCR_FCHAR},
+    {"REQ_SCR_BCHAR", REQ_SCR_BCHAR},
+    {"REQ_SCR_HFLINE", REQ_SCR_HFLINE},
+    {"REQ_SCR_HBLINE", REQ_SCR_HBLINE},
+    {"REQ_SCR_HFHALF", REQ_SCR_HFHALF},
+    {"REQ_SCR_HBHALF", REQ_SCR_HBHALF},
+    {"REQ_VALIDATION", REQ_VALIDATION},
+    {"REQ_NEXT_CHOICE", REQ_NEXT_CHOICE},
+    {"REQ_PREV_CHOICE", REQ_PREV_CHOICE},
 };
 
 /* Initialization function for the module */
@@ -655,6 +647,23 @@ _curses_form_exec(PyObject *mod)
 
     if (PyModule_AddType(mod, state->PyCursesForm_Type) < 0) {
         return -1;
+    }
+
+    state->PyCursesField_Type = (PyTypeObject *)PyType_FromModuleAndSpec(
+        mod, &PyCursesField_Type_spec, NULL);
+    if (state->PyCursesField_Type == NULL) {
+        return -1;
+    }
+
+    if (PyModule_AddType(mod, state->PyCursesField_Type) < 0) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < Py_ARRAY_LENGTH(form_requests); i++) {
+        if (PyModule_AddIntConstant(mod, form_requests[i].name,
+                                    form_requests[i].value) < 0) {
+            return -1;
+        }
     }
 
     import_curses();
@@ -692,7 +701,7 @@ _curses_form_exec(PyObject *mod)
 }
 
 static PyModuleDef_Slot _curses_slots[] = {
-    {Py_mod_exec, _curses_panel_exec},
+    {Py_mod_exec, _curses_form_exec},
     // XXX gh-103092: fix isolation.
     {Py_mod_multiple_interpreters, Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED},
     //{Py_mod_multiple_interpreters, Py_MOD_PER_INTERPRETER_GIL_SUPPORTED},

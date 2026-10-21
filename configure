@@ -27448,6 +27448,7 @@ fi
 
 fi
 PANEL_CFLAGS=$(echo $PANEL_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
+FORM_CFLAGS=$(echo $FORM_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
 
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking panel flags" >&5
 printf %s "checking panel flags... " >&6; }
@@ -27461,6 +27462,22 @@ else case e in #(
   e)
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $have_panel (CFLAGS: $PANEL_CFLAGS, LIBS: $PANEL_LIBS)" >&5
 printf "%s\n" "$have_panel (CFLAGS: $PANEL_CFLAGS, LIBS: $PANEL_LIBS)" >&6; }
+ ;;
+esac
+fi
+
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking form flags" >&5
+printf %s "checking form flags... " >&6; }
+if test "x$have_form" = xno
+then :
+
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+else case e in #(
+  e)
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $have_form (CFLAGS: $FORM_CFLAGS, LIBS: $FORM_LIBS)" >&5
+printf "%s\n" "$have_form (CFLAGS: $FORM_CFLAGS, LIBS: $FORM_LIBS)" >&6; }
  ;;
 esac
 fi

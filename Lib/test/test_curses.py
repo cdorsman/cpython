@@ -21,7 +21,7 @@ curses = import_module('curses')
 import_module('curses.ascii')
 import_module('curses.textpad')
 try:
-    import curses.form
+    from curses import form
     import curses.panel
 except ImportError:
     pass

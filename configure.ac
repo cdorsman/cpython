@@ -6295,12 +6295,20 @@ AS_VAR_IF([ac_cv_header_form_h], [yes], [
 
 dnl pyconfig.h defines _XOPEN_SOURCE=700
 PANEL_CFLAGS=$(echo $PANEL_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
+FORM_CFLAGS=$(echo $FORM_CFLAGS | sed 's/-D_XOPEN_SOURCE=600//g')
 
 AC_MSG_CHECKING([panel flags])
 AS_VAR_IF([have_panel], [no], [
   AC_MSG_RESULT([no])
 ], [
   AC_MSG_RESULT([$have_panel (CFLAGS: $PANEL_CFLAGS, LIBS: $PANEL_LIBS)])
+])
+
+AC_MSG_CHECKING([form flags])
+AS_VAR_IF([have_form], [no], [
+  AC_MSG_RESULT([no])
+], [
+  AC_MSG_RESULT([$have_form (CFLAGS: $FORM_CFLAGS, LIBS: $FORM_LIBS)])
 ])
 
 # first curses header check
